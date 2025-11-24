@@ -8,9 +8,9 @@ import os
 # 1. 設定與基礎類別
 # ==========================================
 
-BASE_FILE_PATH = "C:/Users/aaron/Desktop/Python/大學中文/datas/2025/"
+BASE_FILE_PATH = "C:/Users/aaron/Desktop/Python/大學中文/datas/2024/"
 
-# 隊伍代號對照表 (中文 -> 英文)
+# 隊伍代號對照表
 TEAM_MAP = {
     "悍": "guardians",
     "龍": "dragons",
@@ -78,18 +78,14 @@ class GetData:
         return self.data
 
 # ==========================================
-# 2. 核心邏輯工具函式
+# 2. 核心邏輯工具函式 (已修正 Bug)
 # ==========================================
 
 def get_era_from_local_file(team_name: str, target_pitchers: list) -> dict:
-    """ 
-    根據隊伍名稱 (如 dragons) 去讀取對應的 .txt 檔案
-    並回傳該隊投手的 ERA+ 與 tERA+
-    """
     file_path = f"{BASE_FILE_PATH}{team_name}.txt"
     
     if not os.path.exists(file_path):
-        print(f"Warning: File not found - {file_path}")
+        # print(f"Warning: File not found - {file_path}")
         return {}
 
     try:
@@ -122,9 +118,10 @@ def get_era_from_local_file(team_name: str, target_pitchers: list) -> dict:
 
                 raw_name = cols[name_idx].get_text(strip=True)
                 
-                # 比對名字
                 for target in target_pitchers:
-                    if target in raw_name:
+                    # 這裡加上簡單的名稱修正，避免 '陳仕鵬' vs '陳仕朋' 的問題
+                    # 但主要依賴 target (API名) 是否包含在 raw_name (檔案名) 中
+                    if target in raw_name or raw_name in target:
                         try:
                             val_erap = cols[erap_idx].get_text(strip=True)
                             val_terap = cols[terap_idx].get_text(strip=True)
@@ -143,33 +140,35 @@ def get_era_from_local_file(team_name: str, target_pitchers: list) -> dict:
 
 def identify_sp_in_game(game) -> tuple:
     """ 
-    回傳: (home_sp, away_sp)
-    注意：
-    - Top Inning (1局上) 是「客隊進攻」，所以是「主隊投手」在投。
-    - Bottom Inning (1局下) 是「主隊進攻」，所以是「客隊投手」在投。
+    修正版邏輯：
+    精準尋找「下半局開始」的那個打席。
+    下半局開始的特徵：棒次(PA_order) 為 1，且是該隊第一輪(PA_round) 為 1。
     """
     try:
-        # PA_list[0] 是這場比賽的第一個打席，也就是 1局上。
-        # 負責投球的是「主隊 (Home) 先發投手」
-        home_sp_name = game["PA_list"][0]["pitcher"]["name"]
-        
-        # 尋找攻守交換點 (1局下)，那是「客隊 (Away) 先發投手」
-        index = 1
-        if index >= len(game["PA_list"]): return (home_sp_name, None)
+        pa_list = game.get("PA_list", [])
+        if not pa_list:
+            return (None, None)
 
-        switch = (game["PA_list"][index]["PA_order"] <= game["PA_list"][index-1]["PA_order"])
-        first_round = (game["PA_list"][index-1]["PA_round"] == 1)
+        # 1. 取得主隊先發 (1局上投手)
+        home_sp_name = pa_list[0]["pitcher"]["name"]
+        away_sp_name = None
+
+        # 2. 尋找客隊先發 (1局下投手)
+        # 我們從 index 1 開始找，尋找第一個同時滿足 PA_order==1 和 PA_round==1 的打席
+        # 這代表是「另一隊」的第一棒第一次上場，也就是下半局開始
+        for i in range(1, len(pa_list)):
+            pa = pa_list[i]
+            # 檢查是否為第一棒，且是第一輪
+            # 注意：如果是單局打超過一輪，PA_order 會是 1，但 PA_round 會是 2 (或其他)，所以會被這裡過濾掉
+            if pa["PA_order"] == 1 and pa["PA_round"] == 1:
+                away_sp_name = pa["pitcher"]["name"]
+                break
         
-        while (not (switch and first_round)):
-            index += 1
-            if index >= len(game["PA_list"]): break
-            switch = (game["PA_list"][index]["PA_order"] <= game["PA_list"][index-1]["PA_order"])
-            first_round = (game["PA_list"][index-1]["PA_round"] == 1)
-        
-        away_sp_name = game["PA_list"][index]["pitcher"]["name"]
-        
+        # 若找不到 (例如比賽只打半局裁定? 極少見)，則 away_sp 為 None
         return (home_sp_name, away_sp_name)
-    except Exception:
+
+    except Exception as e:
+        # print(f"Error parsing game SP: {e}")
         return (None, None)
 
 # ==========================================
@@ -177,81 +176,65 @@ def identify_sp_in_game(game) -> tuple:
 # ==========================================
 
 def run_analysis(start_date: tuple, end_date: tuple, n_late_games: int):
-    # 1. 爬取資料
+    # 1. 爬取
     crawler = GetData(start_date, end_date)
     raw_data_weeks = crawler.run()
 
-    # 2. 攤平並排序比賽 (由舊到新)
+    # 2. 排序
     all_sorted_games = []
     sorted_dates = sorted(raw_data_weeks.keys())
     for d in sorted_dates:
-        # 原資料一週內是倒序的，轉正序
         all_sorted_games.extend(raw_data_weeks[d][::-1]) 
 
-    # 3. 篩選「富邦悍將 (Guardians)」有參與的比賽
+    # 3. 篩選
     guardians_games = []
     for game in all_sorted_games:
         if game["info"]["status"] != "FINISHED":
             continue
-        
         h = game["home"]["abbr"]
         a = game["away"]["abbr"]
-        
         if h == "悍" or a == "悍":
             guardians_games.append(game)
 
     total_g_count = len(guardians_games)
     print(f"Total Guardians games: {total_g_count}")
     
-    # 4. 初始化六隊統計容器
-    # stats = { "guardians": { "投手A": {total:0, late:0}, ... }, "dragons": {...} }
+    # 4. 初始化容器
     stats = { team_code: {} for team_code in TEAM_MAP.values() }
 
-    # 計算季末 B 區間的起始索引
+    # 5. 分析
     late_start_index = total_g_count - n_late_games
 
-    # 5. 逐場分析並歸類
     for idx, game in enumerate(guardians_games):
         is_late = (idx >= late_start_index)
-        
         home_abbr = game["home"]["abbr"]
         away_abbr = game["away"]["abbr"]
         
-        # 取得 (主隊先發, 客隊先發)
         home_sp, away_sp = identify_sp_in_game(game)
         
         if not home_sp or not away_sp: 
             continue
 
-        # --- 歸類邏輯 ---
-        
-        # 處理主隊先發 (Home SP) -> 歸類到 home_abbr 對應的隊伍
+        # 歸類主隊先發 (Home SP -> Home Team)
         if home_abbr in TEAM_MAP:
-            team_key = TEAM_MAP[home_abbr]
-            if home_sp not in stats[team_key]:
-                stats[team_key][home_sp] = {"total": 0, "late": 0}
-            stats[team_key][home_sp]["total"] += 1
-            if is_late:
-                stats[team_key][home_sp]["late"] += 1
+            t_key = TEAM_MAP[home_abbr]
+            if home_sp not in stats[t_key]: stats[t_key][home_sp] = {"total": 0, "late": 0}
+            stats[t_key][home_sp]["total"] += 1
+            if is_late: stats[t_key][home_sp]["late"] += 1
 
-        # 處理客隊先發 (Away SP) -> 歸類到 away_abbr 對應的隊伍
+        # 歸類客隊先發 (Away SP -> Away Team)
         if away_abbr in TEAM_MAP:
-            team_key = TEAM_MAP[away_abbr]
-            if away_sp not in stats[team_key]:
-                stats[team_key][away_sp] = {"total": 0, "late": 0}
-            stats[team_key][away_sp]["total"] += 1
-            if is_late:
-                stats[team_key][away_sp]["late"] += 1
+            t_key = TEAM_MAP[away_abbr]
+            if away_sp not in stats[t_key]: stats[t_key][away_sp] = {"total": 0, "late": 0}
+            stats[t_key][away_sp]["total"] += 1
+            if is_late: stats[t_key][away_sp]["late"] += 1
 
-    # 6. 讀取數據並輸出 6 份 CSV
+    # 6. 輸出
     print("\nGenerating CSV files...")
-    
     for team_code in stats.keys():
         pitchers_dict = stats[team_code]
-        if not pitchers_dict:
-            continue
+        if not pitchers_dict: continue
             
-        # 根據隊伍讀取對應的 HTML 檔案 (e.g., dragons.txt)
         era_data = get_era_from_local_file(team_code, list(pitchers_dict.keys()))
         
         csv_data = []
@@ -259,7 +242,8 @@ def run_analysis(start_date: tuple, end_date: tuple, n_late_games: int):
             p_era = 0.0
             p_tera = 0.0
             
-            # 填入 ERA 數據
+            # 若爬蟲名與檔案名有出入 (如 陳仕鵬 vs 陳仕朋)，get_era_from_local_file 會嘗試比對
+            # 若仍找不到，則為 0
             if name in era_data:
                 p_era = era_data[name]["ERA+"]
                 p_tera = era_data[name]["tERA+"]
@@ -275,19 +259,12 @@ def run_analysis(start_date: tuple, end_date: tuple, n_late_games: int):
         if csv_data:
             df = pd.DataFrame(csv_data)
             df.set_index("投手名稱", inplace=True)
-            filename = f"2025_{team_code}_analysis.csv"
+            filename = f"2024_bottom_{team_code}_analysis.csv"
             df.to_csv(filename, encoding='utf-8-sig')
-            print(f" -> Saved: {filename} ({len(csv_data)} pitchers)")
+            print(f" -> Saved: {filename}")
 
-# ==========================================
-# 4. 執行入口
-# ==========================================
 if __name__ == "__main__":
-    # 2025 上半季
-    s_date = (2025, 6, 30)
-    e_date = (2025, 10, 12)
-    
-    # 季末後 n 場
-    LATE_N = 8
-    
+    s_date = (2024, 7, 8)
+    e_date = (2024, 10, 27)
+    LATE_N = 19
     run_analysis(s_date, e_date, LATE_N)
