@@ -100,7 +100,7 @@ class GetPAStats:
             """
             從本機 HTML 檔案解析進階數據，並整合至 player_data
             """
-            file_path = r"C:\Users\aaron\Desktop\Python\大學中文\datas\offense\2025年上.txt"
+            file_path = r"C:\Users\aaron\Desktop\Python\大學中文\datas\offense\2024年上.txt"
             
             if not os.path.exists(file_path):
                 print(f"錯誤：找不到檔案 {file_path}")
@@ -292,4 +292,18 @@ RE24：正負多少得分期望值
 BABIP：球打進場後形成安打的機率，但要搭配擊球類型
 ISO：純長打率
 P/PA：纏鬥能力
+"""
+
+"""
+2025 上
+0324 0630
+
+2025 下
+0630 1012 0926
+
+2024 上
+0401 0703 0623
+
+2024 下
+0701 1027
 """
