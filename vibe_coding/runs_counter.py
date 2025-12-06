@@ -1,75 +1,64 @@
 import requests as rq
-import json
 import datetime
+import math
 
-class GetScore:
+end_D = (2025, 7, 3)
+
+class GetRunStats:
+    # 模擬瀏覽器的 Header
     header = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*"
     }
 
-    # 網址後綴代碼
+    # 年份對應的 URL 後綴
     suffix = {
         2018: "Fq", 2019: "Sf", 2020: "KS", 2021: "fi", 
         2022: "dG", 2023: "sk", 2024: "xa", 2025: "JO"
     }
 
     def __init__(self, start_date: tuple, end_date: tuple):
-        # 將 tuple (yyyy, mm, dd) 轉換為 datetime 物件以便計算
+        # 將 tuple (2025, 3, 24) 轉為 datetime 物件方便計算
         self._start_date = datetime.date(*start_date)
         self._end_date = datetime.date(*end_date)
-        
-        self._now = self._start_date
+        self._current_date = self._start_date
         self._url = None
         
-        # 統計數據
-        self._total_games = 0
-        self._total_runs_scored = 0   # 總得分
-        self._total_runs_allowed = 0  # 總失分
+        # 統計數據容器
+        self._games_count = 0
+        self._total_runs_scored = 0  # 總得分
+        self._total_runs_allowed = 0 # 總失分
+        self._run_differentials = [] # 每一場的得失分差 (用於計算標準差)
 
-    def url_get(self):
+    def _url_get(self):
         """
-        根據當前日期 self._now 生成對應的 API URL
+        產生 Rebas API 的 URL
         """
-        y = self._now.year
-        m = self._now.month
-        d = self._now.day
-        
-        # 取得該年份對應的代碼，若無則預設為 2025 的 JO (或可拋出錯誤)
-        su = self.suffix.get(y, "JO")
-        
-        # f-string 格式化日期，自動補零
+        y, m, d = self._current_date.year, self._current_date.month, self._current_date.day
+        su = self.suffix.get(y, "JO") 
+        # 保持你原本的 URL 格式
         self._url = f"https://www.rebas.tw/api/seasons/CPBL-{y}-{su}/games?start={y}-{m:02d}-{d:02d}"
 
     def raw_content_by_get(self, url: str): 
         """
-        發送 GET 請求並回傳 JSON 資料
+        爬蟲核心：發送 GET 請求並回傳 JSON
         """
         try:
-            # 使用 Session 可以保持連線設定 (雖在此例中非必須，但為好習慣)
-            response = rq.get(url, headers=self.header, timeout=10)
-            
-            if response.status_code != 200:
-                print(f"[Error] 請求失敗: {url} (Status: {response.status_code})")
-                return None
-                
+            s = rq.Session()
+            response = s.get(url, headers=self.header)
+            response.raise_for_status() # 檢查 HTTP 錯誤
             return response.json()
-            
-        except rq.exceptions.RequestException as e:
-            print(f"[Error] 連線錯誤: {e}")
-            return None
-        except json.JSONDecodeError:
-            print(f"[Error] JSON 解析失敗: {url}")
+        except Exception as e:
+            print(f"Error fetching data from {url}: {e}")
             return None
 
-    def count_score(self, game_list):
+    def _process_games(self, game_list: list):
         """
-        分析單週比賽列表，累加富邦悍將的得分與失分
+        分析單週比賽列表，提取富邦悍將的得分與失分
         """
-        target_team = "悍"  # 富邦悍將的簡寫
-
         for game in game_list:
             # 1. 檢查比賽是否已結束
+            # (參考 games.json 與 cpbl_era.py 的邏輯)
             status = game.get("info", {}).get("status")
             if status != "FINISHED":
                 continue
@@ -79,85 +68,94 @@ class GetScore:
             
             home_abbr = home_data.get("abbr")
             away_abbr = away_data.get("abbr")
-            
-            # 2. 判斷是否有富邦悍將參與
-            if home_abbr != target_team and away_abbr != target_team:
+
+            # 2. 確認富邦悍將 ("悍") 是否參賽
+            if home_abbr != "悍" and away_abbr != "悍":
                 continue
 
-            self._total_games += 1
-            
-            # 3. 根據主客場計算得分與失分
+            date = game["info"]["started_at"].split()[0]
+            tu = tuple(map(int, date.split("-")))
+            if (tu > end_D):
+                continue
+                
+            # 3. 取得比分
             try:
                 home_score = int(home_data.get("runs", 0))
                 away_score = int(away_data.get("runs", 0))
-                
-                if home_abbr == target_team:
-                    # 富邦是主隊
-                    self._total_runs_scored += home_score
-                    self._total_runs_allowed += away_score
-                else:
-                    # 富邦是客隊
-                    self._total_runs_scored += away_score
-                    self._total_runs_allowed += home_score
-                    
             except ValueError:
-                print("[Warning] 分數資料格式錯誤，跳過此場比賽")
-                continue
+                continue # 防止資料錯誤
 
-    def next_date(self):
-        """
-        將當前日期往後推一週
-        """
-        self._now += datetime.timedelta(days=7)
+            # 4. 判斷主客場並分配 得分/失分
+            if home_abbr == "悍":
+                runs_scored = home_score
+                runs_allowed = away_score
+            else: # 客場
+                runs_scored = away_score
+                runs_allowed = home_score
+            
+            # 5. 紀錄數據
+            self._total_runs_scored += runs_scored
+            self._total_runs_allowed += runs_allowed
+            self._run_differentials.append(runs_scored - runs_allowed)
+            self._games_count += 1
 
     def analyze(self):
-        print(f"開始分析區間: {self._start_date} 至 {self._end_date}")
+        """
+        主程式：遍歷日期區間，抓取並分析數據
+        """
+        print(f"Start analyze from {self._start_date} to {self._end_date}")
         
-        # 當前日期小於結束日期時持續執行
-        while self._now < self._end_date:
-            self.url_get()
+        # 當前日期小於結束日期時，持續迴圈
+        while self._current_date < self._end_date:
+            self._url_get()
             # print(f"Fetching: {self._url}") # Debug 用
             
             json_data = self.raw_content_by_get(self._url)
             
             if json_data and "data" in json_data:
-                game_list = json_data["data"]
-                self.count_score(game_list)
-            else:
-                # 若該週無資料或請求失敗，可選擇印出訊息或直接跳過
-                pass
-
-            self.next_date()
-
-        # 分析結束，印出結果
-        self.print_result()
-
-    def print_result(self):
-        print("-" * 30)
-        print(f"分析結果 (富邦悍將):")
-        print(f"總場次: {self._total_games}")
-        print(f"總得分: {self._total_runs_scored}")
-        print(f"總失分: {self._total_runs_allowed}")
-        
-        if self._total_games > 0:
-            avg_scored = self._total_runs_scored / self._total_games
-            avg_allowed = self._total_runs_allowed / self._total_games
-            print(f"場均得分: {avg_scored:.2f}")
-            print(f"場均失分: {avg_allowed:.2f}")
+                self._process_games(json_data["data"])
             
-            # 額外資訊：得失分差
-            diff = avg_scored - avg_allowed
-            print(f"場均分差: {diff:+.2f}")
-        else:
-            print("此區間內無已完成的比賽資料。")
+            # 前進一週 (配合 Rebas API 的特性)
+            self._current_date += datetime.timedelta(days=7)
+        
+        self._print_stats()
+
+    def _print_stats(self):
+        """
+        計算並印出最終統計結果
+        """
+        if self._games_count == 0:
+            print("在此區間內找不到已完成的富邦悍將比賽。")
+            return
+
+        # 計算平均值
+        avg_rs = self._total_runs_scored / self._games_count
+        avg_ra = self._total_runs_allowed / self._games_count
+        avg_diff = sum(self._run_differentials) / self._games_count
+        
+        # 計算得失分差的標準差 (Standard Deviation)
+        # 公式：sqrt( sum((x - mean)^2) / N )
+        variance = sum((x - avg_diff) ** 2 for x in self._run_differentials) / self._games_count
+        std_dev = math.sqrt(variance)
+
+        print("-" * 30)
+        print(f"【富邦悍將 區間戰績統計】")
+        print(f"統計場數: {self._games_count} 場")
+        print("-" * 30)
+        print(f"總得分  : {self._total_runs_scored}")
+        print(f"總失分  : {self._total_runs_allowed}")
+        print("-" * 30)
+        print(f"場均得分      : {avg_rs:.2f}")
+        print(f"場均失分      : {avg_ra:.2f}")
+        print(f"場均得失分差  : {avg_diff:.2f}")
+        print(f"得失分差標準差: {std_dev:.2f}")
         print("-" * 30)
 
-# --- 執行區塊 ---
+# 使用範例
 if __name__ == "__main__":
-    # 你可以在這裡調整日期區間 (年, 月, 日)
-    # 建議 start_date 設定為週一
-    start_date = (2025, 3, 24)
-    end_date = (2025, 6, 30)
+    # 設定日期區間 (年, 月, 日)
+    start = (2025, 4, 1)
+    end = (2025, 7, 3)
     
-    analyzer = GetScore(start_date, end_date)
+    analyzer = GetRunStats(start, end)
     analyzer.analyze()
