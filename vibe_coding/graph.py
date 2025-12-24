@@ -41,7 +41,7 @@ width = 0.12  # 每條柱子的寬度 (因為有 6 條，所以要細一點)
 # 順序：23 ERA, 23 tERA, 24 ERA, 24 tERA, 25 ERA, 25 tERA
 
 # 2023 (左邊)
-rects1 = ax.bar(x - width*2.5, df['2025_top_ERA+'], width, label='2025 上半季 ERA+ 差', color='#a1c9f4', edgecolor='white')
+rects1 = ax.bar(x - width*2.5, df['2025_top_tERA+'], width, label='2025 上半季 ERA+ 差', color='#a1c9f4', edgecolor='white')
 rects2 = ax.bar(x - width*1.5, df['2025_top_tERA+'], width, label='2025 上半季 tERA+ 差', color='#8de5a1', edgecolor='white')
 
 # 2024 (中間)
